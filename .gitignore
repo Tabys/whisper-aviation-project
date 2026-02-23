@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.runs/
+tmp_*.wav
+whisper-aviation-model/
+whisper-aviation-model-final/
+*.log

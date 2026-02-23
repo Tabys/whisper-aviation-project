@@ -1,0 +1,15 @@
+torch
+torchaudio
+transformers
+datasets
+accelerate
+evaluate
+tensorboard
+jiwer
+librosa
+flask
+flask-cors
+requests
+openai-whisper
+prometheus-client
+huggingface_hub
