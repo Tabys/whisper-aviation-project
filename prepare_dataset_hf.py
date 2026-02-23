@@ -61,4 +61,7 @@ if __name__ == "__main__":
     print(f"Test:       {len(ds['test'])} examples")
     print(f"Text column: '{col}'")
     # Покажем первый пример
-    print("First example text:", ds["train"][0][col])
+    first_row = ds["train"][0]
+    print("First example text:", first_row[col])
+    # не вызываем first_row["audio"], чтобы не трогать torchcodec
+
