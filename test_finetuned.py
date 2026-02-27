@@ -22,7 +22,6 @@ def main():
 
     processor = AutoProcessor.from_pretrained(model_id)
 
-    # ✅ ОПТИМАЛЬНЫЕ ПАРАМЕТРЫ
     pipe = pipeline(
         "automatic-speech-recognition",
         model=model,

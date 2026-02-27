@@ -2,16 +2,7 @@ import re
 
 
 def normalize_aviation_text(text: str) -> str:
-    """
-    Нормализация авиационных транскрипций:
-    - FL + слова → FL + цифры + пробелы (FLTHREE10 → FL 3 1 0)
-    - Flight level → FL
-    - Слова → цифры
-    - Пробелы перед цифрами после слов
-    - RUNWAY31 без пробелов
-    - Верхний регистр
-    """
-    
+  
     # Сохраняем оригинал для дебага
     original = text
     
@@ -29,7 +20,7 @@ def normalize_aviation_text(text: str) -> str:
     for word, digit in number_words.items():
         text = re.sub(rf"\b{word}\b", digit, text, flags=re.IGNORECASE)
     
-    # 4. ✅ КРИТИЧНО: ВСТАВЛЯЕМ ПРОБЕЛЫ ПЕРЕД ЦИФРАМИ ПОСЛЕ БУКВ
+    # 4. КРИТИЧНО: ВСТАВЛЯЕМ ПРОБЕЛЫ ПЕРЕД ЦИФРАМИ ПОСЛЕ БУКВ
     # WIND120 → WIND 120, FL310 → FL 3 1 0
     text = re.sub(r"([A-Z]{2,})([0-9])", r"\1 \2", text)
     
@@ -51,10 +42,10 @@ def normalize_aviation_text(text: str) -> str:
     return text
 
 
-# 🧪 ТЕСТЫ
+# ТЕСТЫ
 if __name__ == "__main__":
     tests = [
-        "flight level three one zero",                    # → FL 3 1 0
+        "flight level three one zero",                   # → FL 3 1 0
         "FLTHREE10",                                     # → FL 3 1 0
         "WIND one two zero degrees",                     # → WIND 1 2 0 DEGREES
         "WIND120",                                       # → WIND 120

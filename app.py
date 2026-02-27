@@ -25,7 +25,6 @@ model = AutoModelForSpeechSeq2Seq.from_pretrained(
 
 processor = AutoProcessor.from_pretrained("./whisper-aviation-model-medium-final")
 
-# ✅ ОПТИМАЛЬНЫЕ ПАРАМЕТРЫ для aviation в generate_kwargs
 asr_pipe = pipeline(
     "automatic-speech-recognition",
     model=model,

@@ -1,15 +1,33 @@
-torch
-torchaudio
-transformers
-datasets
-accelerate
-evaluate
-tensorboard
-jiwer
-librosa
-flask
-flask-cors
-requests
-openai-whisper
-prometheus-client
-huggingface_hub
+# Базовые ML-библиотеки
+torch>=2.1.0
+torchaudio>=2.1.0
+
+# Hugging Face экосистема
+transformers>=4.37.0
+datasets>=2.16.0
+accelerate>=0.25.0
+evaluate>=0.4.0
+huggingface_hub>=0.20.0
+
+# Логгинг и метрики
+tensorboard>=2.15.0
+jiwer>=3.0.0
+prometheus-client>=0.20.0
+
+# Аудио / обработка
+librosa>=0.10.1
+soundfile>=0.12.1
+numpy>=1.24.0
+
+# Веб-API
+flask>=3.0.0
+flask-cors>=4.0.0
+requests>=2.31.0
+
+# Whisper
+openai-whisper>=20231117
+
+# Утилиты
+tqdm>=4.66.0
+python-dotenv>=1.0.0
+pandas>=2.1.0

@@ -3,10 +3,10 @@ import functools
 import numpy
 import torch
 
-# ✅ Меньше фрагментации VRAM
+# Меньше фрагментации VRAM
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-# ✅ ФИКС PyTorch 2.6: патчим torch.load для resume checkpoint
+# ФИКС PyTorch 2.6: патчим torch.load для resume checkpoint
 _original_torch_load = torch.load
 @functools.wraps(_original_torch_load)
 def _patched_torch_load(*args, **kwargs):
@@ -133,18 +133,18 @@ def main():
     print("STEP 2: Loading Whisper model and processor...")
     print("=" * 50)
 
-    model_id = "openai/whisper-medium"  # ✅ medium многоязычная
+    model_id = "openai/whisper-medium"  # medium многоязычная
 
     processor = WhisperProcessor.from_pretrained(
         model_id,
-        language="english",             # ✅ EN датасет сейчас
-        task="transcribe"               # ✅ В будущем можно сменить на "ru"
+        language="english",             # EN датасет сейчас
+        task="transcribe"               # В будущем можно сменить на "ru"
     )
 
     model = WhisperForConditionalGeneration.from_pretrained(model_id)
     model.config.forced_decoder_ids = None
     model.config.suppress_tokens = []
-    model.config.use_cache = False      # ✅ ОБЯЗАТЕЛЬНО с gradient_checkpointing!
+    model.config.use_cache = False
 
     print("=" * 50)
     print("STEP 3: Audio will be loaded on-the-fly during training.")
@@ -181,7 +181,7 @@ def main():
             label_ids, skip_special_tokens=True
         )
 
-        # ✅ Нормализация для метрики
+        #  Нормализация для метрики
         pred_str = [normalize_aviation_text(s) for s in pred_str_raw]
         label_str = [normalize_aviation_text(s) for s in label_str_raw]
 
@@ -200,12 +200,12 @@ def main():
 
     training_args = Seq2SeqTrainingArguments(
         output_dir="./whisper-aviation-model-medium",
-        per_device_train_batch_size=2,       # ✅ P100 16GB
+        per_device_train_batch_size=2,
         per_device_eval_batch_size=1,
-        gradient_accumulation_steps=4,      # ✅ Итоговый batch = 32
-        learning_rate=5e-6,                  # ✅ Меньше LR для medium
+        gradient_accumulation_steps=4,
+        learning_rate=5e-6,
         warmup_steps=500,
-        max_steps=8000,                      # ✅ Больше шагов для medium
+        max_steps=8000,
         evaluation_strategy="steps",
         eval_steps=500,
         save_strategy="steps",
@@ -220,8 +220,8 @@ def main():
         dataloader_num_workers=0,
         remove_unused_columns=False,
         predict_with_generate=True,
-        generation_max_length=64,            # ✅ Короткие ATC фразы
-        gradient_checkpointing=True,         # ✅ КЛЮЧЕВОЙ ФИКС OOM!
+        generation_max_length=64,
+        gradient_checkpointing=True,
     )
 
     print("=" * 50)

@@ -113,12 +113,10 @@ def main():
         input_features = inputs.input_features.to(device, dtype=torch_dtype)
 
         with torch.no_grad():
-            # ✅ ОПТИМАЛЬНЫЕ ПАРАМЕТРЫ ДЛЯ АВИАЦИИ
             generated_ids = model.generate(
                 input_features=input_features,
                 language="en",
                 task="transcribe",
-                # КЛЮЧЕВЫЕ ОГРАНИЧЕНИЯ
                 max_new_tokens=128,           # Датасет короткий!
                 min_new_tokens=2,
                 no_repeat_ngram_size=6,      # Анти-повторы
@@ -152,7 +150,7 @@ def main():
             print(f" PRED NORM: {pred_text}")
             print(f" REF words: {len(ref_text.split())} | PRED words: {len(pred_text.split())}")
 
-    # ✅ ПОЛНАЯ ДИАГНОСТИКА
+    # Диагностика
     print(f"\n{'='*60}")
     print("LENGTH ANALYSIS")
     print(f"{'='*60}")
