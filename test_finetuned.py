@@ -1,19 +1,18 @@
 import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
+from normalize_text import normalize_aviation_text
+
 
 def main():
-    # Путь к обученной модели (папка, созданная после finetune_whisper.py)
-    model_id = "./whisper-aviation-model-final"
+    model_id = "./whisper-aviation-model-medium-final"
 
-    # Автоматически выбираем GPU или CPU
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
     print(f"Using device: {device}")
     print(f"Loading model from: {model_id}")
 
-    # Загружаем модель
     model = AutoModelForSpeechSeq2Seq.from_pretrained(
         model_id,
         torch_dtype=torch_dtype,
@@ -21,10 +20,9 @@ def main():
         use_safetensors=True,
     ).to(device)
 
-    # Загружаем процессор (токенизатор + feature extractor)
     processor = AutoProcessor.from_pretrained(model_id)
 
-    # Создаём pipeline — удобная обёртка для распознавания
+    # ✅ ОПТИМАЛЬНЫЕ ПАРАМЕТРЫ
     pipe = pipeline(
         "automatic-speech-recognition",
         model=model,
@@ -32,16 +30,32 @@ def main():
         feature_extractor=processor.feature_extractor,
         torch_dtype=torch_dtype,
         device=0 if device.startswith("cuda") else -1,
+        generate_kwargs={
+            "max_new_tokens": 64,
+            "min_new_tokens": 2,
+            "no_repeat_ngram_size": 6,
+            "repetition_penalty": 3.0,
+            "temperature": 0.05,
+            "top_p": 0.7,
+            "num_beams": 5,
+            "early_stopping": True,
+            "length_penalty": 0.6,
+        }
     )
 
-    # Распознаём тестовый файл
-    # Положи файл testradiocall.wav в папку проекта на сервере
     test_audio_path = "testradiocall.wav"
     print(f"Transcribing: {test_audio_path}")
 
     result = pipe(test_audio_path)
-    print(f"Result: {result['text']}")
-
+    
+    raw_text = result["text"].strip()
+    normalized_text = normalize_aviation_text(raw_text)
+    
+    print(f"RAW RESULT:     {raw_text}")
+    print(f"NORMALIZED:     {normalized_text}")
+    print(f"FLIGHT LEVELS:  {'FL' in normalized_text}")
+    print(f"DIGITS PRESENT: any(c in normalized_text for c in '0123456789')")
+    print(f"Words count:    {len(normalized_text.split())}")
 
 if __name__ == "__main__":
     main()

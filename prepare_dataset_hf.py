@@ -1,67 +1,102 @@
-from datasets import load_dataset, DatasetDict, Audio
+import os
+import pandas as pd
+from huggingface_hub import hf_hub_download
+from datasets import Dataset, DatasetDict
 from normalize_text import normalize_aviation_text
 
-
 def load_and_normalize():
-    """
-    Загружает датасет jacktol/ATC-ASR-Dataset с Hugging Face,
-    нормализует текст и приводит аудио к 16 kHz.
-    """
-    # 1. Скачиваем датасет (может занять несколько минут)
-    print("Downloading ATC ASR Dataset from Hugging Face...")
-    raw = load_dataset("jacktol/ATC-ASR-Dataset")
-    print("Download complete!")
-    print(raw)
+    print("Downloading ATC ASR Dataset Parquet files directly...")
+    
+    repo_id = "jacktol/ATC-ASR-Dataset"
+    repo_type = "dataset"
+    
+    # Список всех файлов из репозитория
+    files_to_download = {
+        "train": [
+            "data/train-00000-of-00002.parquet",
+            "data/train-00001-of-00002.parquet"
+        ],
+        "validation": [
+            "data/validation-00000-of-00001.parquet"
+        ],
+        "test": [
+            "data/test-00000-of-00001.parquet"
+        ]
+    }
 
-    # 2. Собираем в словарь train / validation / test
-    #    Если в датасете нет какого-то сплита, нужно будет
-    #    сделать split вручную (см. комментарий ниже)
-    if "validation" in raw and "test" in raw:
-        dataset = DatasetDict(
-            train=raw["train"],
-            validation=raw["validation"],
-            test=raw["test"],
-        )
-    else:
-        # Если сплитов нет — делаем сами из train
-        print("No validation/test splits found. Creating them...")
-        train_test = raw["train"].train_test_split(test_size=0.2, seed=42)
-        temp = train_test["test"].train_test_split(test_size=0.5, seed=42)
-        dataset = DatasetDict(
-            train=train_test["train"],
-            validation=temp["train"],
-            test=temp["test"],
-        )
+    local_audio_dir = os.path.join(os.getcwd(), "audio_files")
+    os.makedirs(local_audio_dir, exist_ok=True)
+    print(f"Audio files will be extracted to: {local_audio_dir}")
 
-    # 3. Нормализуем авиационный текст
-    #    Поле с текстом может называться "text", "sentence" или "transcript"
-    #    Проверь вывод print(raw) выше и поменяй, если нужно
-    text_column = "text"  # <-- ПОМЕНЯЙ, если поле называется иначе
+    new_splits = {}
+    text_column = "text"
 
-    def normalize_batch(batch):
-        return {text_column: [normalize_aviation_text(t) for t in batch[text_column]]}
+    for split_name, file_paths in files_to_download.items():
+        print(f"\nProcessing split: {split_name}")
+        
+        all_dfs = []
+        for file_path in file_paths:
+            try:
+                local_parquet_path = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=file_path,
+                    repo_type=repo_type
+                )
+                print(f"Downloaded {file_path}")
+                df_part = pd.read_parquet(local_parquet_path)
+                all_dfs.append(df_part)
+            except Exception as e:
+                print(f"Failed to download {file_path}. Error: {e}")
 
-    print("Normalizing text...")
-    for split_name in dataset:
-        dataset[split_name] = dataset[split_name].map(
-            normalize_batch, batched=True, batch_size=100
-        )
+        if not all_dfs:
+            print(f"Skipping {split_name} (no files loaded).")
+            continue
+            
+        # Склеиваем все куски для текущего сплита
+        df = pd.concat(all_dfs, ignore_index=True)
+        print(f"Loaded total {len(df)} rows for {split_name}.")
 
-    # 4. Указываем, что колонка "audio" — это аудио, и приводим к 16 kHz
-    dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
+        audio_paths = []
+        texts = []
 
-    return dataset, text_column
+        for index, row in df.iterrows():
+            audio_data = row['audio']
+            
+            if not isinstance(audio_data, dict) or 'bytes' not in audio_data:
+                continue
+                
+            audio_bytes = audio_data['bytes']
+            original_path = audio_data.get('path', f"audio_{index}.wav")
+            
+            # Если пути нет или он пустой, генерируем простое имя
+            if not original_path:
+                original_path = f"audio_{index}.wav"
+                
+            safe_filename = os.path.basename(original_path)
+            filename = f"{split_name}_{index}_{safe_filename}"
+            dst_path = os.path.join(local_audio_dir, filename)
 
+            # Сохраняем файл на диск (только если его еще нет)
+            if not os.path.exists(dst_path):
+                with open(dst_path, "wb") as f:
+                    f.write(audio_bytes)
+
+            audio_paths.append(dst_path)
+            texts.append(normalize_aviation_text(row[text_column]))
+
+            if index > 0 and index % 1000 == 0:
+                print(f"  Extracted {index}/{len(df)} files...")
+
+        new_splits[split_name] = Dataset.from_dict({
+            "audio_path": audio_paths,
+            text_column: texts,
+        })
+        print(f"Successfully processed {split_name}: {len(audio_paths)} examples.")
+
+    final_dataset = DatasetDict(new_splits)
+    print("\nFinished extraction!")
+    print(final_dataset)
+    return final_dataset, text_column
 
 if __name__ == "__main__":
     ds, col = load_and_normalize()
-    print(ds)
-    print(f"Train:      {len(ds['train'])} examples")
-    print(f"Validation: {len(ds['validation'])} examples")
-    print(f"Test:       {len(ds['test'])} examples")
-    print(f"Text column: '{col}'")
-    # Покажем первый пример
-    first_row = ds["train"][0]
-    print("First example text:", first_row[col])
-    # не вызываем first_row["audio"], чтобы не трогать torchcodec
-

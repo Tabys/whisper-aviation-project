@@ -1,18 +1,16 @@
 version: '3.8'
-
 services:
-    whisper-api:
-        build: .
-        container_name: whisper-api
-        ports:
-            - '5000:5000'
-        environment:
-            - CUDA_VISIBLE_DEVICES=0
-        volumes:
-            - ./logs:/app/logs
-        restart: unless-stopped
-        deploy:
-            resources:
-                reservations:
-                    devices:
-                        - capabilities: ['gpu']
+  whisper-api:
+    build: .
+    container_name: whisper-api
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./whisper-aviation-model-medium-final:/app/whisper-aviation-model-medium-final:ro
+      - ./.logs:/logs/app
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]

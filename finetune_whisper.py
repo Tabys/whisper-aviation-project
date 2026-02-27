@@ -1,137 +1,234 @@
+import os
+import functools
+import numpy
 import torch
+
+# ✅ Меньше фрагментации VRAM
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+# ✅ ФИКС PyTorch 2.6: патчим torch.load для resume checkpoint
+_original_torch_load = torch.load
+@functools.wraps(_original_torch_load)
+def _patched_torch_load(*args, **kwargs):
+    kwargs.setdefault("weights_only", False)
+    return _original_torch_load(*args, **kwargs)
+torch.load = _patched_torch_load
+
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+import torchaudio
 from transformers import (
     WhisperProcessor,
     WhisperForConditionalGeneration,
     Seq2SeqTrainingArguments,
     Seq2SeqTrainer,
-    DataCollatorSpeechSeq2SeqWithPadding,
     set_seed,
 )
 import evaluate
+from transformers.trainer_utils import get_last_checkpoint
 
 from prepare_dataset_hf import load_and_normalize
+from normalize_text import normalize_aviation_text
 
 
-def main():
-    set_seed(42)
+@dataclass
+class SimpleSpeechSeq2SeqCollator:
+    processor: WhisperProcessor
+    decoder_start_token_id: Optional[int] = None
+    text_column: str = "text"
 
-    # ===== 1. ЗАГРУЗКА ДАТАСЕТА =====
-    print("=" * 50)
-    print("STEP 1: Loading and preparing dataset...")
-    print("=" * 50)
-    dataset_dict, text_column = load_and_normalize()
+    def load_audio_from_path(self, path: str):
+        waveform, sr = torchaudio.load(path)
+        if waveform.shape[0] > 1:
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
+        return waveform.squeeze(0).numpy(), sr
 
-    # ===== 2. ЗАГРУЗКА МОДЕЛИ И ПРОЦЕССОРА =====
-    print("=" * 50)
-    print("STEP 2: Loading Whisper model and processor...")
-    print("=" * 50)
-    model_id = "openai/whisper-small"
-    processor = WhisperProcessor.from_pretrained(model_id)
-    model = WhisperForConditionalGeneration.from_pretrained(model_id)
+    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        audio_arrays = []
+        sampling_rate = None
+        labels_list = []
 
-    # Отключаем принудительные токены (нужно для fine-tuning)
-    model.config.forced_decoder_ids = None
-    model.config.suppress_tokens = []
+        for f in features:
+            arr, sr = self.load_audio_from_path(f["audio_path"])
+            audio_arrays.append(arr)
+            sampling_rate = sr
 
-    # ===== 3. ПОДГОТОВКА ДАТАСЕТА ДЛЯ МОДЕЛИ =====
-    print("=" * 50)
-    print("STEP 3: Preparing dataset for model...")
-    print("=" * 50)
+            label_tokens = self.processor.tokenizer(f[self.text_column]).input_ids
+            labels_list.append(label_tokens)
 
-    def prepare_batch(batch):
-        # Извлекаем аудио-массивы и частоту дискретизации
-        audio_arrays = [a["array"] for a in batch["audio"]]
-        sampling_rate = batch["audio"][0]["sampling_rate"]
-
-        # Преобразуем аудио в формат, понятный Whisper
-        inputs = processor(
+        inputs = self.processor(
             audio_arrays,
             sampling_rate=sampling_rate,
             return_tensors="pt",
         )
 
-        # Преобразуем текст в токены (числа)
-        labels = processor.tokenizer(batch[text_column]).input_ids
+        input_features = inputs.input_features
+
+        label_tensors = [torch.tensor(lbl, dtype=torch.long) for lbl in labels_list]
+        labels_padded = torch.nn.utils.rnn.pad_sequence(
+            label_tensors,
+            batch_first=True,
+            padding_value=self.processor.tokenizer.pad_token_id,
+        )
+
+        padding_mask = labels_padded == self.processor.tokenizer.pad_token_id
+        labels_padded[padding_mask] = -100
 
         return {
-            "input_features": inputs.input_features,
-            "labels": labels,
+            "input_features": input_features,
+            "labels": labels_padded,
         }
 
-    print("Preparing train dataset...")
-    train_dataset = dataset_dict["train"].map(
-        prepare_batch,
-        remove_columns=dataset_dict["train"].column_names,
-        batched=True,
-        num_proc=4,
+
+class WhisperSeq2SeqTrainer(Seq2SeqTrainer):
+    """
+    Кастомный Trainer: language='en' жёстко задан + анти-зацикливание.
+    """
+
+    def prediction_step(
+        self,
+        model,
+        inputs,
+        prediction_loss_only,
+        ignore_keys=None,
+    ):
+        inputs = self._prepare_inputs(inputs)
+
+        with torch.no_grad():
+            outputs = model(**inputs)
+            loss = outputs.loss
+
+            if prediction_loss_only:
+                return (loss, None, None)
+
+            generated_tokens = model.generate(
+                input_features=inputs["input_features"],
+                language="en",
+                task="transcribe",
+                max_new_tokens=128,
+                min_new_tokens=2,
+                no_repeat_ngram_size=6,
+                repetition_penalty=3.0,
+                temperature=0.0,
+                num_beams=5,
+                early_stopping=True,
+                length_penalty=0.6,
+                do_sample=False,
+            )
+
+        labels = inputs.get("labels")
+        return (loss, generated_tokens, labels)
+
+
+def main():
+    set_seed(42)
+
+    print("=" * 50)
+    print("STEP 1: Loading dataset (already extracted)...")
+    print("=" * 50)
+    dataset_dict, text_column = load_and_normalize()
+
+    print("=" * 50)
+    print("STEP 2: Loading Whisper model and processor...")
+    print("=" * 50)
+
+    model_id = "openai/whisper-medium"  # ✅ medium многоязычная
+
+    processor = WhisperProcessor.from_pretrained(
+        model_id,
+        language="english",             # ✅ EN датасет сейчас
+        task="transcribe"               # ✅ В будущем можно сменить на "ru"
     )
 
-    print("Preparing validation dataset...")
-    val_dataset = dataset_dict["validation"].map(
-        prepare_batch,
-        remove_columns=dataset_dict["validation"].column_names,
-        batched=True,
-        num_proc=4,
-    )
+    model = WhisperForConditionalGeneration.from_pretrained(model_id)
+    model.config.forced_decoder_ids = None
+    model.config.suppress_tokens = []
+    model.config.use_cache = False      # ✅ ОБЯЗАТЕЛЬНО с gradient_checkpointing!
 
-    # ===== 4. НАСТРОЙКА ОБУЧЕНИЯ =====
+    print("=" * 50)
+    print("STEP 3: Audio will be loaded on-the-fly during training.")
+    print("=" * 50)
+
+    train_dataset = dataset_dict["train"]
+    val_dataset = dataset_dict["validation"]
+
     print("=" * 50)
     print("STEP 4: Setting up training...")
     print("=" * 50)
 
-    # Data Collator — собирает батчи одинаковой длины
-    data_collator = DataCollatorSpeechSeq2SeqWithPadding(
+    data_collator = SimpleSpeechSeq2SeqCollator(
         processor=processor,
         decoder_start_token_id=model.config.decoder_start_token_id,
+        text_column=text_column,
     )
 
-    # Метрика WER (Word Error Rate) — чем ниже, тем лучше
     wer_metric = evaluate.load("wer")
 
     def compute_metrics(pred):
         pred_ids = pred.predictions
         label_ids = pred.label_ids
 
-        # Заменяем -100 на pad_token_id (технический нюанс)
+        if isinstance(pred_ids, tuple):
+            pred_ids = pred_ids[0]
+
         label_ids[label_ids == -100] = processor.tokenizer.pad_token_id
 
-        # Декодируем числа обратно в текст
-        pred_str = processor.batch_decode(pred_ids, skip_special_tokens=True)
-        label_str = processor.batch_decode(label_ids, skip_special_tokens=True)
+        pred_str_raw = processor.tokenizer.batch_decode(
+            pred_ids, skip_special_tokens=True
+        )
+        label_str_raw = processor.tokenizer.batch_decode(
+            label_ids, skip_special_tokens=True
+        )
 
-        # Считаем WER
-        wer = wer_metric.compute(predictions=pred_str, references=label_str)
-        return {"wer": wer}
+        # ✅ Нормализация для метрики
+        pred_str = [normalize_aviation_text(s) for s in pred_str_raw]
+        label_str = [normalize_aviation_text(s) for s in label_str_raw]
 
-    # Параметры обучения
+        # Первые 3 примера
+        for i in range(min(3, len(pred_str))):
+            print(f" REF RAW:  {label_str_raw[i]}")
+            print(f" REF NORM: {label_str[i]}")
+            print(f" PRED RAW:  {pred_str_raw[i]}")
+            print(f" PRED NORM: {pred_str[i]}")
+            print()
+
+        wer_value = wer_metric.compute(predictions=pred_str, references=label_str)
+        print(f"\n[Eval] Word Error Rate (WER): {wer_value * 100:.2f}%\n")
+
+        return {"wer": wer_value}
+
     training_args = Seq2SeqTrainingArguments(
-        output_dir="./whisper-aviation-model",       # куда сохранять чекпоинты
-        per_device_train_batch_size=16,               # размер батча (уменьши до 8, если не хватит памяти GPU)
-        per_device_eval_batch_size=8,                 # размер батча при оценке
-        gradient_accumulation_steps=2,                # накопление градиентов
-        learning_rate=1e-5,                           # скорость обучения
-        warmup_steps=500,                             # разогрев
-        max_steps=4000,                               # сколько шагов обучения
-        evaluation_strategy="steps",                  # оценка каждые N шагов
-        eval_steps=500,                               # оценка каждые 500 шагов
-        save_strategy="steps",                        # сохранение каждые N шагов
-        save_steps=500,                               # сохранение каждые 500 шагов
-        logging_steps=25,                             # логирование каждые 25 шагов
-        report_to=["tensorboard"],                    # логи для TensorBoard
-        load_best_model_at_end=True,                  # в конце загрузить лучшую модель
-        metric_for_best_model="wer",                  # лучшая = наименьший WER
-        greater_is_better=False,                      # меньше WER = лучше
-        push_to_hub=False,                            # не загружать на HF Hub
-        fp16=True,                                    # обучение в половинной точности (экономит память GPU)
-        num_train_epochs=3,                           # максимум эпох
+        output_dir="./whisper-aviation-model-medium",
+        per_device_train_batch_size=2,       # ✅ P100 16GB
+        per_device_eval_batch_size=1,
+        gradient_accumulation_steps=4,      # ✅ Итоговый batch = 32
+        learning_rate=5e-6,                  # ✅ Меньше LR для medium
+        warmup_steps=500,
+        max_steps=8000,                      # ✅ Больше шагов для medium
+        evaluation_strategy="steps",
+        eval_steps=500,
+        save_strategy="steps",
+        save_steps=500,
+        logging_steps=25,
+        report_to=["tensorboard"],
+        load_best_model_at_end=True,
+        metric_for_best_model="wer",
+        greater_is_better=False,
+        push_to_hub=False,
+        fp16=True,
+        dataloader_num_workers=0,
+        remove_unused_columns=False,
+        predict_with_generate=True,
+        generation_max_length=64,            # ✅ Короткие ATC фразы
+        gradient_checkpointing=True,         # ✅ КЛЮЧЕВОЙ ФИКС OOM!
     )
 
-    # ===== 5. ЗАПУСК ОБУЧЕНИЯ =====
     print("=" * 50)
     print("STEP 5: Starting training...")
     print("=" * 50)
 
-    trainer = Seq2SeqTrainer(
+    trainer = WhisperSeq2SeqTrainer(
         args=training_args,
         model=model,
         train_dataset=train_dataset,
@@ -141,17 +238,22 @@ def main():
         tokenizer=processor.tokenizer,
     )
 
-    trainer.train()
+    last_checkpoint = get_last_checkpoint("./whisper-aviation-model-medium")
+    if last_checkpoint is not None:
+        print(f"Resuming training from checkpoint: {last_checkpoint}")
+        trainer.train(resume_from_checkpoint=last_checkpoint)
+    else:
+        print("No checkpoint found. Starting from scratch.")
+        trainer.train()
 
-    # ===== 6. СОХРАНЕНИЕ ФИНАЛЬНОЙ МОДЕЛИ =====
     print("=" * 50)
     print("STEP 6: Saving final model...")
     print("=" * 50)
 
-    model.save_pretrained("./whisper-aviation-model-final")
-    processor.save_pretrained("./whisper-aviation-model-final")
+    model.save_pretrained("./whisper-aviation-model-medium-final")
+    processor.save_pretrained("./whisper-aviation-model-medium-final")
 
-    print("DONE! Model saved to ./whisper-aviation-model-final")
+    print("DONE! Model saved to ./whisper-aviation-model-medium-final")
 
 
 if __name__ == "__main__":

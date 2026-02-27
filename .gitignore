@@ -4,6 +4,6 @@ __pycache__/
 *.pyo
 .runs/
 tmp_*.wav
-whisper-aviation-model/
-whisper-aviation-model-final/
+whisper-aviation-model-medium/
+whisper-aviation-model-medium-final/
 *.log
